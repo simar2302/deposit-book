@@ -14,7 +14,7 @@ import {
 import { parseDollarsToCents } from "./money";
 import { checkRate, clearRate, recordFailure, pruneOldAttempts } from "./ratelimit";
 import { headers } from "next/headers";
-import { addDays, isYmd, todayYmd, ymdInBusinessTz } from "./dates";
+import { addDays, isYmd, longDate, todayYmd, ymdInBusinessTz } from "./dates";
 
 export type ActionState = { error?: string; fieldErrors?: Record<string, string> };
 
@@ -395,4 +395,82 @@ export async function deleteDepositAction(
       ? `/owner/day/${deposit.businessDate}?deleted=1`
       : `/dashboard/${deposit.businessDate}?deleted=1`,
   );
+}
+
+// ------------------------------------------------------------- closures
+
+/**
+ * Set or end a store's temporary closure from the Company Admin screen — the
+ * same thing `npm run store:close` does, without needing a terminal.
+ *
+ * Ending a closure that has already started does not wipe it: the closure is
+ * cut short to yesterday, so the days the store really was shut keep reading
+ * "Closed" instead of turning into a run of missed deposits.
+ */
+export async function setClosureAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState & { saved?: string }> {
+  const session = await requireSession();
+  if (session.role !== "OWNER") {
+    return { error: "Only the Company Admin can change a store's closure." };
+  }
+
+  const storeId = Number(formData.get("storeId"));
+  if (!Number.isInteger(storeId)) return { error: "Bad store id." };
+  const store = await prisma.store.findUnique({ where: { id: storeId } });
+  if (!store) return { error: "Store not found." };
+
+  const today = todayYmd();
+  const reopen = formData.get("intent") === "reopen";
+
+  let closedFrom: string | null;
+  let closedUntil: string | null;
+  let saved: string;
+
+  if (reopen) {
+    const yesterday = addDays(today, -1);
+    if (store.closedFrom && store.closedFrom <= yesterday) {
+      closedFrom = store.closedFrom;
+      closedUntil = yesterday;
+    } else {
+      closedFrom = null;
+      closedUntil = null;
+    }
+    saved = "Open again. A deposit is expected from today.";
+  } else {
+    const from = String(formData.get("closedFrom") ?? "").trim();
+    const until = String(formData.get("closedUntil") ?? "").trim();
+    if (!isYmd(from)) return { error: "Pick the first day the store is closed." };
+    if (!isYmd(until)) return { error: "Pick the last day the store is closed." };
+    if (until < from) return { error: "The last closed day is before the first one." };
+    closedFrom = from;
+    closedUntil = until;
+    saved = `Saved. Deposits are expected again from ${longDate(addDays(until, 1))}.`;
+  }
+
+  await prisma.store.update({
+    where: { id: storeId },
+    data: { closedFrom, closedUntil },
+  });
+
+  await audit({
+    userId: session.userId,
+    userName: session.name,
+    action: reopen ? "STORE_REOPENED" : "STORE_CLOSED",
+    entity: "Store",
+    entityId: storeId,
+    detail: {
+      storeNumber: store.storeNumber,
+      closedFrom,
+      closedUntil,
+      was: { closedFrom: store.closedFrom, closedUntil: store.closedUntil },
+      via: "admin screen",
+    },
+  });
+
+  revalidatePath("/dashboard");
+  revalidatePath("/owner");
+  revalidatePath(`/owner/store/${storeId}`);
+  return { saved };
 }
