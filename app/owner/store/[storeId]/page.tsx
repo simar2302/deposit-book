@@ -11,6 +11,7 @@ import { StoreCalendar } from "@/components/StoreCalendar";
 import { Legend } from "@/components/Legend";
 import { Stat } from "@/components/Stat";
 import { DepositCard } from "@/components/DepositCard";
+import { ClosureForm } from "@/components/ClosureForm";
 
 export default async function OwnerStorePage({
   params,
@@ -77,6 +78,13 @@ export default async function OwnerStorePage({
           </div>
         </div>
       </section>
+
+      <ClosureForm
+        storeId={storeId}
+        closedFrom={store.closedFrom}
+        closedUntil={store.closedUntil}
+        today={todayYmd()}
+      />
 
       <section className="space-y-2 pt-1">
         <h2 className="text-base font-extrabold tracking-[-0.01em]">
